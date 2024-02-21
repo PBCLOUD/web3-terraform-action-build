@@ -1,0 +1,195 @@
+name: 'BuildApp'
+description: 'Get all the parameters by Name of the repository'
+runs:
+  using: "composite"
+  steps:
+
+
+    - name: Show Repository and Branch Name
+      run: |
+       echo "El REPOSITORIO ES:$GITHUB_REPOSITORY Y la RAMA ES ${{ github.ref_name }}"
+      shell: bash
+
+    - name: Set up environment
+      run: |
+        case "${{ github.ref_name }}" in
+          main)
+              echo AWS_ACCESS_KEY_ID=${{ env.AWS_ACCESS_KEY_ID_MAIN }} >> "$GITHUB_ENV"
+              echo AWS_SECRET_ACCESS_KEY=${{ env.AWS_SECRET_ACCESS_KEY_MAIN }} >> "$GITHUB_ENV"
+              echo BRANCH_CUSTOM_NAME="prod" >> "$GITHUB_ENV"
+            ;;
+          develop)
+              echo AWS_ACCESS_KEY_ID=${{ env.AWS_ACCESS_KEY_ID_DEV }} >> "$GITHUB_ENV"
+              echo AWS_SECRET_ACCESS_KEY=${{ env.AWS_SECRET_ACCESS_KEY_DEV }} >> "$GITHUB_ENV"
+              echo BRANCH_CUSTOM_NAME="dev" >> "$GITHUB_ENV"
+            ;;
+          qa)
+              echo AWS_ACCESS_KEY_ID=${{ env.AWS_ACCESS_KEY_ID_QA }} >> "$GITHUB_ENV"
+              echo AWS_SECRET_ACCESS_KEY=${{ env.AWS_SECRET_ACCESS_KEY_QA }} >> "$GITHUB_ENV"
+              echo BRANCH_CUSTOM_NAME="qa" >> "$GITHUB_ENV"
+            ;;
+          *)
+            echo "No matching branch. Exiting..."
+            exit 1
+            ;;
+        esac
+      shell: bash
+        
+    - name: Set Application Name equals Repository Name
+      run: |
+       echo APPLICATION_NAME=$(echo $GITHUB_REPOSITORY | cut -d "/" -f2) >> "$GITHUB_ENV"
+      shell: bash
+         
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Set AWS Account ID
+      run: |
+       echo AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text) >> "$GITHUB_ENV"
+      shell: bash
+      
+    - name: Get Parameters from SSM
+      uses: teamknowlogy-org/action-get-credentials@main
+      with:
+        PROJECT_NAME: ${{ env.PROJECT_NAME }}
+        APPLICATION_NAME: ${{ env.APPLICATION_NAME }}
+      
+    - name: Use Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+###### LAMBDA DEPLOY  ######
+    - name: Set Bucket to push Lambda Code
+      if: env.DEPLOY_TYPE == 'LAMBDA'
+      run: |
+          echo S3_BUCKET_NAME_LAMBDA="squint-${{ env.BRANCH_CUSTOM_NAME }}-lambda-deploy" >> "$GITHUB_ENV"   
+      shell: bash
+      
+    - name: Install NPM Dependencies
+      if: env.DEPLOY_TYPE == 'LAMBDA'
+      run: npm install ${{ env.PROD_FLAG }}
+      shell: bash
+      
+    - name: Run NPM Build  
+      if: env.DEPLOY_TYPE == 'LAMBDA'   
+      run: npm run build:ssm 
+      shell: bash
+
+    - name: Zip Lambda Function
+      if: env.DEPLOY_TYPE == 'LAMBDA'   
+      run: zip -r lambda_function.zip ./* -x "*.zip"
+      shell: bash
+      
+    - name: Push Lambda Code to S3 Bucket
+      if: env.DEPLOY_TYPE == 'LAMBDA'   
+      run: aws s3 cp "lambda_function.zip" "s3://${{ env.S3_BUCKET_NAME_LAMBDA }}/${{ env.APPLICATION_NAME }}/lambda_function.zip"
+      shell: bash
+
+    - name: Deploy Lambda code using Zip file pushed to S3
+      if: env.DEPLOY_TYPE == 'LAMBDA'   
+      run: |
+        aws lambda update-function-code \
+          --function-name ${{ env.APPLICATION_NAME }} \
+          --s3-bucket ${{ env.S3_BUCKET_NAME_LAMBDA }} \
+          --s3-key ${{ env.APPLICATION_NAME }}/lambda_function.zip \
+          --region ${{ env.AWS_REGION }}
+      shell: bash
+
+    - name: Delete zip file from S3
+      if: env.DEPLOY_TYPE == 'LAMBDA'   
+      run: aws s3 rm "s3://${{ env.S3_BUCKET_NAME_LAMBDA }}/${{ env.APPLICATION_NAME }}/lambda_function.zip"
+      shell: bash
+
+###### CLOUDFRONT DEPLOY  ######
+    - name: Set environment variable for S3 Bucket to deploy the code
+      if: env.DEPLOY_TYPE == 'CLOUDFRONT'
+      run: |
+          echo BUCKET_NAME="${{ env.APPLICATION_NAME }}-${{ env.BRANCH_CUSTOM_NAME }}" >> "$GITHUB_ENV"   
+      shell: bash
+      
+    - name: Get Cloudfront distributuion ID
+      if: env.DEPLOY_TYPE == 'CLOUDFRONT'
+      run: |
+          echo CLOUDFRONT_DISTRIBUTION="$(aws cloudfront list-distributions --query 'DistributionList.Items[?Origins.Items[?Id==`'${{ env.BUCKET_NAME }}'`]].{Id:Id}' --output text)" >> "$GITHUB_ENV"   
+      shell: bash
+    
+    - name: Set CLOUDFRONT_DISTRIBUTION Env      
+      if: env.DEPLOY_TYPE == 'CLOUDFRONT'
+      run: |
+          echo "My Cloudfront distribution is: ${{ env.CLOUDFRONT_DISTRIBUTION }}"
+      shell: bash
+                
+    - name: Run NPM Install
+      if: env.DEPLOY_TYPE == 'CLOUDFRONT'
+      run: |
+        npm install
+      shell: bash
+      
+    - name: Run NPM Build
+      if: env.DEPLOY_TYPE == 'CLOUDFRONT'
+      run: |
+        npm run build:develop
+      shell: bash
+
+    - name: Push code to S3
+      if: env.DEPLOY_TYPE == 'CLOUDFRONT'
+      run: |
+        cd output/dist
+        aws s3 sync . s3://${{ env.BUCKET_NAME }} --delete
+        ls -lrt
+      shell: bash
+
+    - name: Invalidate CloudFront cache
+      if: env.DEPLOY_TYPE == 'CLOUDFRONT'
+      run: |
+        aws cloudfront create-invalidation --distribution-id ${{ env.CLOUDFRONT_DISTRIBUTION }} --paths "/*"
+      shell: bash
+
+####### ECS steps  ######
+    - name: Set Bucket to push Lambda Code
+      if: env.DEPLOY_TYPE == 'ECS'
+      run: |
+          echo ECR_REPOSITORY="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com" >> "$GITHUB_ENV"   
+      shell: bash
+      
+    - name: Run NPM Install
+      if: env.DEPLOY_TYPE == 'ECS'
+      run: |
+        npm install
+      shell: bash
+
+    - name: Run NPM Build
+      if: env.DEPLOY_TYPE == 'ECS'
+      run: |
+        npm run build
+      shell: bash
+          
+    - name: AWS ECR Login
+      if: env.DEPLOY_TYPE == 'ECS'
+      run: |
+        aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REPOSITORY }}
+      shell: bash
+      
+    - name: Build and Tag Docker Image
+      if:  env.DEPLOY_TYPE == 'ECS'
+      run: |
+        docker build -t ${{ env.APPLICATION_NAME }} .
+        docker tag ${{ env.APPLICATION_NAME }}:latest ${{ env.ECR_REPOSITORY }}/${{ env.APPLICATION_NAME }}:latest
+      shell: bash
+      
+    - name: Run Docker Push to ECR
+      if:  env.DEPLOY_TYPE == 'ECS'
+      run: |
+        docker push ${{ env.ECR_REPOSITORY }}/${{ env.APPLICATION_NAME }}:latest
+      shell: bash
+   
+    - name: Update AWS ECS service
+      if:  env.DEPLOY_TYPE == 'ECS'
+      run: |
+        aws ecs update-service --cluster squint-ecs-cluster --service ${{ env.APPLICATION_NAME }}-ecs-service --force-new-deployment
+      shell: bash
