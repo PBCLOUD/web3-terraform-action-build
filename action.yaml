@@ -1,0 +1,40 @@
+name: 'Action Terraform'
+description: 'Action Terraform'
+runs:
+  using: "composite"
+  steps:
+
+      - name: Delete gitconfig
+        run: rm -f $HOME/.gitconfig
+        shell: bash
+        
+      - name: Git config init    
+        run: git config --global url."https://oauth2:${TF_VAR_github_access_token}@github.com".insteadOf https://github.com
+        shell: bash
+       
+      - name: Terraform init    
+        run:  terraform init -backend-config="bucket=${TFSTATE_BUCKET}" -backend-config="key=${TFSTATE_NAME}/${TFSTATE_KEY}.tfstate" -backend-config="region=${AWS_REGION}" -reconfigure
+        shell: bash
+        working-directory: "${{ env.TF_WORKDIR }}"
+
+      - name: Terraform plan  
+        run: terraform plan 
+        shell: bash
+        working-directory: "${{ env.TF_WORKDIR }}"
+
+      - name: Terraform apply 
+        if:  "${{ env.TF_DESTROY == 'false' }}"
+        run: terraform apply --auto-approve
+        shell: bash
+        working-directory: "${{ env.TF_WORKDIR }}"
+        
+      - name: Terraform destroy 
+        if:  "${{ env.TF_DESTROY == 'true' }}"
+        run: terraform destroy --auto-approve   
+        shell: bash
+        working-directory: "${{ env.TF_WORKDIR }}"       
+        
+      - name: Delete gitconfig
+        run: rm -f $HOME/.gitconfig
+        shell: bash
+        
