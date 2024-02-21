@@ -1,0 +1,5 @@
+# Define code owners for specific paths in the repository
+
+# Example:
+# /frontend/* @purplebox/frontend-team
+# /backend/* @purplebox/backend-team
