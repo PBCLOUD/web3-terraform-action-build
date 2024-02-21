@@ -1,8 +1,5 @@
 provider "github" {
-  token = "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"
-  #token = "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"
-  #token = "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"
-  owner="teamknowlogy-org"
+  token = "xxx"
 
 }
 terraform {
