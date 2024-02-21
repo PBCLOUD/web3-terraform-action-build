@@ -15,7 +15,7 @@ runs:
       - name: Terraform init    
         run:  terraform init -backend-config="bucket=${TFSTATE_BUCKET}" -backend-config="key=${TFSTATE_NAME}/${TFSTATE_KEY}.tfstate" -backend-config="region=${AWS_REGION}" -reconfigure
         shell: bash
-        working-directory: "${{ env.TF_WORKDIR }}"
+        working-directory: "${{ env.TF_WORKDIR }}
 
       - name: Terraform plan  
         run: terraform plan 
